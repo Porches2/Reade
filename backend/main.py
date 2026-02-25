@@ -169,7 +169,17 @@ def get_page_range(pages: list[dict], start: int | None, end: int | None) -> lis
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    import firebase_admin as _fa
+    fb_ok = _fa._apps.get("[DEFAULT]") is not None
+    pk = os.getenv("FIREBASE_PRIVATE_KEY", "")
+    return {
+        "status": "ok",
+        "firebase_initialized": fb_ok,
+        "private_key_starts": pk[:30] if pk else "MISSING",
+        "private_key_length": len(pk),
+        "project_id": os.getenv("FIREBASE_PROJECT_ID", "MISSING"),
+        "client_email": os.getenv("FIREBASE_CLIENT_EMAIL", "MISSING"),
+    }
 
 
 # --- Library management (auth required) ---

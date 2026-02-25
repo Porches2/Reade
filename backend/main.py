@@ -172,11 +172,16 @@ def health():
     import firebase_admin as _fa
     fb_ok = _fa._apps.get("[DEFAULT]") is not None
     pk = os.getenv("FIREBASE_PRIVATE_KEY", "")
+    has_begin = "-----BEGIN" in pk
+    has_end = "-----END" in pk
+    has_newlines = "\n" in pk
     return {
         "status": "ok",
         "firebase_initialized": fb_ok,
-        "private_key_starts": pk[:30] if pk else "MISSING",
         "private_key_length": len(pk),
+        "has_begin_marker": has_begin,
+        "has_end_marker": has_end,
+        "has_newlines": has_newlines,
         "project_id": os.getenv("FIREBASE_PROJECT_ID", "MISSING"),
         "client_email": os.getenv("FIREBASE_CLIENT_EMAIL", "MISSING"),
     }

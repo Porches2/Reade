@@ -13,7 +13,7 @@ import {
   Platform,
 } from "react-native";
 import { WebView } from "react-native-webview";
-import { Audio } from "expo-av";
+import { useAudioPlayer, useAudioPlayerStatus, AudioModule } from "expo-audio";
 import * as Haptics from "expo-haptics";
 import { api } from "../services/api";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -76,11 +76,14 @@ export default function PdfViewerScreen({ route }: Props) {
   const [showReader, setShowReader] = useState(false);
 
   // Audio
-  const soundRef = useRef<Audio.Sound | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [duration, setDuration] = useState(0);
-  const [position, setPosition] = useState(0);
+  const [audioUri, setAudioUri] = useState<string | null>(null);
+  const player = useAudioPlayer(audioUri);
+  const playerStatus = useAudioPlayerStatus(player);
   const [audioLoaded, setAudioLoaded] = useState(false);
+
+  const isPlaying = playerStatus.playing;
+  const duration = (playerStatus.duration || 0) * 1000; // convert to ms
+  const position = (playerStatus.currentTime || 0) * 1000; // convert to ms
 
   // Auto-scroll
   const scrollViewRef = useRef<ScrollView>(null);
@@ -97,8 +100,8 @@ export default function PdfViewerScreen({ route }: Props) {
 
   // Cleanup
   useEffect(() => {
-    return () => { soundRef.current?.unloadAsync(); };
-  }, []);
+    return () => { player.remove(); };
+  }, [player]);
 
   // Generation progress animation
   useEffect(() => {
@@ -121,34 +124,36 @@ export default function PdfViewerScreen({ route }: Props) {
     progressAnim.setValue(0);
   }, [generating]);
 
-  // Word tracking from audio position - uses ref to avoid re-renders on every tick
+  // Word tracking from audio position
   const wordTimingsRef = useRef<WordTiming[]>([]);
   useEffect(() => { wordTimingsRef.current = wordTimings; }, [wordTimings]);
 
-  const onPlaybackStatus = useCallback((status: any) => {
-    if (!status.isLoaded) return;
-    const pos = status.positionMillis || 0;
-    const dur = status.durationMillis || 0;
-    setPosition(pos);
-    setDuration(dur);
-    setIsPlaying(status.isPlaying);
-
-    // Update word highlight (using ref to avoid dependency on wordTimings)
+  // Track word highlighting based on player position
+  useEffect(() => {
     const timings = wordTimingsRef.current;
-    if (timings.length) {
-      const idx = findWordIndex(timings, pos);
-      if (idx !== currentWordRef.current) {
-        currentWordRef.current = idx;
-        setCurrentWordIndex(idx);
-      }
+    if (!timings.length) return;
+    const pos = position;
+    const idx = findWordIndex(timings, pos);
+    if (idx !== currentWordRef.current) {
+      currentWordRef.current = idx;
+      setCurrentWordIndex(idx);
     }
+  }, [position]);
 
-    if (status.didJustFinish) {
-      setIsPlaying(false);
+  // Auto-play when audio loads
+  useEffect(() => {
+    if (audioUri && playerStatus.duration && playerStatus.duration > 0 && !playerStatus.playing) {
+      player.play();
+    }
+  }, [audioUri, playerStatus.duration]);
+
+  // Handle playback finished
+  useEffect(() => {
+    if (playerStatus.didJustFinish) {
       currentWordRef.current = -1;
       setCurrentWordIndex(-1);
     }
-  }, []);
+  }, [playerStatus.didJustFinish]);
 
   // Auto-scroll when word changes
   useEffect(() => {
@@ -168,25 +173,15 @@ export default function PdfViewerScreen({ route }: Props) {
 
   const loadAndPlayAudio = useCallback(async (url: string) => {
     try {
-      if (soundRef.current) {
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
-      }
-      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: true });
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: url },
-        { shouldPlay: true, progressUpdateIntervalMillis: 60 },
-        onPlaybackStatus,
-      );
-      soundRef.current = sound;
+      await AudioModule.setAudioModeAsync({ playsInSilentModeIOS: true });
+      setAudioUri(url);
       setAudioLoaded(true);
-      setIsPlaying(true);
       setShowReader(true);
     } catch (err) {
       console.error("Audio load error:", err);
       Alert.alert("Error", "Failed to play audio");
     }
-  }, [onPlaybackStatus]);
+  }, []);
 
   const handleRead = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -231,27 +226,21 @@ export default function PdfViewerScreen({ route }: Props) {
   };
 
   const togglePlayPause = async () => {
-    if (!soundRef.current) return;
+    if (!audioLoaded) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (isPlaying) await soundRef.current.pauseAsync();
-    else await soundRef.current.playAsync();
+    if (isPlaying) player.pause();
+    else player.play();
   };
 
   const seekTo = async (ratio: number) => {
-    if (!soundRef.current || !duration) return;
-    await soundRef.current.setPositionAsync(Math.floor(ratio * duration));
+    if (!audioLoaded || !duration) return;
+    player.seekTo(ratio * duration / 1000); // seekTo takes seconds
   };
 
   const closeAudio = useCallback(async () => {
-    if (soundRef.current) {
-      await soundRef.current.stopAsync();
-      await soundRef.current.unloadAsync();
-      soundRef.current = null;
-    }
+    player.pause();
+    setAudioUri(null);
     setAudioLoaded(false);
-    setIsPlaying(false);
-    setPosition(0);
-    setDuration(0);
     setPagesRead([]);
     setWordTimings([]);
     wordTimingsRef.current = [];
@@ -260,7 +249,7 @@ export default function PdfViewerScreen({ route }: Props) {
     setShowReader(false);
     wordYPositions.current = null;
     lastScrollY.current = 0;
-  }, []);
+  }, [player]);
 
   const progressRatio = duration > 0 ? position / duration : 0;
 

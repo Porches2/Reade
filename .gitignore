@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+*.pyc
+
+# Environment & secrets
+.env
+.env.local
+.env*.local
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!postcss.config.mjs
+!next-env.d.ts
+!netlify.toml
+
+# Build output
+.next/
+out/
+
+# Data & uploads
+backend/data/
+
+# OS
+.DS_Store

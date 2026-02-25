@@ -38,7 +38,7 @@ async function request(path: string, options: RequestInit = {}) {
 }
 
 export const api = {
-  // Upload goes through Next.js proxy to avoid CORS with FormData
+  // Upload directly to backend
   uploadPdf: async (file: File) => {
     const token = await getAuthToken();
     if (!token) {
@@ -48,7 +48,7 @@ export const api = {
     const formData = new FormData();
     formData.append("file", file);
 
-    const res = await fetch(`${PROXY_BASE}/upload`, {
+    const res = await fetch(`${BACKEND_URL}/upload`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: formData,

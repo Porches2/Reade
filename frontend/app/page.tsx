@@ -245,6 +245,11 @@ function HomeContent() {
 
   useEffect(() => { refreshLibrary(); }, [refreshLibrary]);
 
+  // Wake backend on page load (Render free tier hibernates)
+  useEffect(() => {
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/health`).catch(() => {});
+  }, []);
+
   useEffect(() => {
     api.getVoices()
       .then((data) => {

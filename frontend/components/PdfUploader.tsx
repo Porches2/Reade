@@ -48,7 +48,7 @@ export default function PdfUploader({ onUploadSuccess }: Props) {
       }
       setError(null);
       setUploading(true);
-      setStatus("Uploading...");
+      setStatus("Connecting...");
 
       try {
         const data = await api.uploadPdf(file);

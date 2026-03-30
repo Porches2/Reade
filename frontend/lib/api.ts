@@ -1,7 +1,6 @@
 import { auth } from "./firebase";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const PROXY_BASE = "/api/backend";
 
 async function getAuthToken(): Promise<string | null> {
   const user = auth.currentUser;

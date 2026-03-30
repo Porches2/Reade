@@ -319,34 +319,33 @@ function HomeContent() {
     }
   };
 
-  const genProgressRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   const handleRead = async () => {
     if (!activePdf) return;
     setLoading(true);
-    setGenProgress(0);
-    setStatus("Generating audio...");
+    setGenProgress(5);
+    setStatus("Starting audio generation...");
     setCurrentWordIndex(-1);
     setWordTimings([]);
     setPagesRead([]);
     setShowReader(false);
 
-    let prog = 0;
-    genProgressRef.current = setInterval(() => {
-      prog += (100 - prog) * 0.03;
-      setGenProgress(Math.min(Math.round(prog), 95));
-    }, 100);
-
     try {
-      const data = await api.tts({
-        pdf_id: activePdf.pdf_id,
-        start_page: readPage,
-        num_pages: readPages,
-        voice: selectedVoice,
-        rate: speechRate,
-      });
+      const data = await api.tts(
+        {
+          pdf_id: activePdf.pdf_id,
+          start_page: readPage,
+          num_pages: readPages,
+          voice: selectedVoice,
+          rate: speechRate,
+        },
+        (progressStatus) => {
+          setStatus(progressStatus);
+          // Extract percentage if present
+          const match = progressStatus.match(/(\d+)%/);
+          if (match) setGenProgress(parseInt(match[1]));
+        }
+      );
 
-      if (genProgressRef.current) clearInterval(genProgressRef.current);
       setGenProgress(100);
 
       const timings: WordTiming[] = data.word_timings || [];
@@ -365,7 +364,6 @@ function HomeContent() {
 
       if (data.has_more && data.next_page) setReadPage(data.next_page);
     } catch (e: unknown) {
-      if (genProgressRef.current) clearInterval(genProgressRef.current);
       setGenProgress(0);
       setStatus(`Error: ${e instanceof Error ? e.message : "Failed"}`);
     } finally {

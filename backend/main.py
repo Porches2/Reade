@@ -1,10 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import uuid
 import json
 import os
+import asyncio
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -437,31 +438,34 @@ def _get_pages_cached(user_id: str, pdf_id: str) -> list[dict]:
     return pages
 
 
-@app.post("/tts")
-async def text_to_speech(req: TTSRequest, user_id: str = Depends(get_current_user)):
+# In-memory TTS job store
+_tts_jobs: dict[str, dict] = {}
+
+
+async def _run_tts_job(job_id: str, user_id: str, req_data: dict):
+    """Background coroutine that generates TTS audio."""
     import edge_tts
 
-    get_pdf_meta(user_id, req.pdf_id)
-    pages = _get_pages_cached(user_id, req.pdf_id)
-
-    end_page = min(req.start_page + req.num_pages - 1, len(pages))
-    selected = [p for p in pages if req.start_page <= p["page"] <= end_page]
-
-    if not selected:
-        raise HTTPException(status_code=400, detail="No content found for the requested pages.")
-
-    raw = "\n\n".join(p["text"] for p in selected if p["text"])
-    text = clean_text_for_tts(raw)
-
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="No readable text on the requested pages.")
-
-    audio_id = str(uuid.uuid4())
-    audio_path = AUDIO_DIR / f"{audio_id}.mp3"
-
     try:
-        communicate = edge_tts.Communicate(text, req.voice, rate=req.rate)
-        # Stream to capture sentence boundaries for word-level timing
+        pages = _get_pages_cached(user_id, req_data["pdf_id"])
+        end_page = min(req_data["start_page"] + req_data["num_pages"] - 1, len(pages))
+        selected = [p for p in pages if req_data["start_page"] <= p["page"] <= end_page]
+
+        if not selected:
+            _tts_jobs[job_id] = {"status": "failed", "error": "No content found for the requested pages."}
+            return
+
+        raw = "\n\n".join(p["text"] for p in selected if p["text"])
+        text = clean_text_for_tts(raw)
+
+        if not text.strip():
+            _tts_jobs[job_id] = {"status": "failed", "error": "No readable text on the requested pages."}
+            return
+
+        audio_id = str(uuid.uuid4())
+        audio_path = AUDIO_DIR / f"{audio_id}.mp3"
+
+        communicate = edge_tts.Communicate(text, req_data["voice"], rate=req_data["rate"])
         sentence_boundaries: list[dict] = []
         audio_chunks: list[bytes] = []
         async for chunk in communicate.stream():
@@ -474,30 +478,61 @@ async def text_to_speech(req: TTSRequest, user_id: str = Depends(get_current_use
                     "text": chunk.get("text", ""),
                 })
         audio_path.write_bytes(b"".join(audio_chunks))
+
+        # Build word-level timings
+        word_timings: list[dict] = []
+        for sent in sentence_boundaries:
+            start_ms = sent["offset"] / 10_000
+            dur_ms = sent["duration"] / 10_000
+            words = sent["text"].split()
+            total_chars = max(sum(len(w) for w in words), 1)
+            cursor = start_ms
+            for w in words:
+                word_dur = dur_ms * (len(w) / total_chars)
+                word_timings.append({"word": w, "start": round(cursor), "end": round(cursor + word_dur)})
+                cursor += word_dur
+
+        _tts_jobs[job_id] = {
+            "status": "done",
+            "audio_url": f"/audio/{audio_id}",
+            "pages_read": [p["page"] for p in selected],
+            "has_more": end_page < len(pages),
+            "next_page": end_page + 1 if end_page < len(pages) else None,
+            "text": text,
+            "word_timings": word_timings,
+        }
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"TTS generation failed: {e}")
+        logger.error(f"[TTS Job {job_id}] Failed: {e}\n{traceback.format_exc()}")
+        _tts_jobs[job_id] = {"status": "failed", "error": str(e)}
 
-    # Build word-level timings from sentence boundaries
-    word_timings: list[dict] = []
-    for sent in sentence_boundaries:
-        start_ms = sent["offset"] / 10_000  # 100ns units → ms
-        dur_ms = sent["duration"] / 10_000
-        words = sent["text"].split()
-        total_chars = max(sum(len(w) for w in words), 1)
-        cursor = start_ms
-        for w in words:
-            word_dur = dur_ms * (len(w) / total_chars)
-            word_timings.append({"word": w, "start": round(cursor), "end": round(cursor + word_dur)})
-            cursor += word_dur
 
-    return {
-        "audio_url": f"/audio/{audio_id}",
-        "pages_read": [p["page"] for p in selected],
-        "has_more": end_page < len(pages),
-        "next_page": end_page + 1 if end_page < len(pages) else None,
-        "text": text,
-        "word_timings": word_timings,
-    }
+@app.post("/tts")
+async def text_to_speech(req: TTSRequest, user_id: str = Depends(get_current_user)):
+    """Starts TTS generation as a background job. Returns job_id immediately."""
+    get_pdf_meta(user_id, req.pdf_id)
+
+    job_id = str(uuid.uuid4())
+    _tts_jobs[job_id] = {"status": "processing"}
+
+    # Launch background task
+    asyncio.ensure_future(_run_tts_job(job_id, user_id, {
+        "pdf_id": req.pdf_id,
+        "start_page": req.start_page,
+        "num_pages": req.num_pages,
+        "voice": req.voice,
+        "rate": req.rate,
+    }))
+
+    return {"job_id": job_id, "status": "processing"}
+
+
+@app.get("/tts/{job_id}")
+def get_tts_job(job_id: str, user_id: str = Depends(get_current_user)):
+    """Poll for TTS job status. Returns result when done."""
+    job = _tts_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return job
 
 
 @app.get("/audio/{audio_id}")

@@ -116,12 +116,31 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  tts: (data: { pdf_id: string; start_page: number; num_pages: number; voice: string; rate: string }) =>
+  // Start TTS job (returns immediately with job_id)
+  ttsStart: (data: { pdf_id: string; start_page: number; num_pages: number; voice: string; rate: string }) =>
     request("/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
-    }, 180000),
+    }),
+
+  // Poll TTS job status
+  ttsPoll: (jobId: string) => request(`/tts/${jobId}`),
+
+  // Start TTS and poll until complete
+  tts: async (data: { pdf_id: string; start_page: number; num_pages: number; voice: string; rate: string }, onProgress?: (status: string) => void) => {
+    const { job_id } = await api.ttsStart(data);
+    onProgress?.("Processing audio...");
+
+    for (let i = 0; i < 120; i++) { // max ~2 min polling
+      await new Promise((r) => setTimeout(r, 1000));
+      const result = await api.ttsPoll(job_id);
+      if (result.status === "done") return result;
+      if (result.status === "failed") throw new Error(result.error || "TTS generation failed");
+      onProgress?.(`Generating audio... ${Math.min(95, Math.round((i / 60) * 100))}%`);
+    }
+    throw new Error("TTS generation timed out. Try fewer pages.");
+  },
 
   getAudioUrl: (audioId: string) => `${BACKEND_URL}/audio/${audioId}`,
 

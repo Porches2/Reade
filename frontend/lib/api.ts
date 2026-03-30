@@ -19,21 +19,33 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${token}` };
 }
 
-// Direct backend call (no proxy timeout issues)
-async function request(path: string, options: RequestInit = {}) {
+// Direct backend call with configurable timeout
+async function request(path: string, options: RequestInit = {}, timeoutMs = 120000) {
   const authHeaders = await getAuthHeaders();
-  const res = await fetch(`${BACKEND_URL}${path}`, {
-    ...options,
-    headers: {
-      ...authHeaders,
-      ...options.headers,
-    },
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(data.detail || `Request failed: ${res.status}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${BACKEND_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...authHeaders,
+        ...options.headers,
+      },
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(data.detail || `Request failed: ${res.status}`);
+    }
+    return res.json();
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("Request timed out. The server may be waking up — try again.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 }
 
 export const api = {
@@ -109,7 +121,7 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
-    }),
+    }, 180000),
 
   getAudioUrl: (audioId: string) => `${BACKEND_URL}/audio/${audioId}`,
 

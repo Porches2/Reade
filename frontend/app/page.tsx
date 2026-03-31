@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import PdfUploader from "@/components/PdfUploader";
 import ExplorePanel from "@/components/ExplorePanel";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import { LogoFull } from "@/components/Logo";
 import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/lib/api";
 
@@ -470,14 +471,7 @@ function HomeContent() {
       <aside className={`w-[220px] bg-white flex flex-col flex-shrink-0 border-r border-gray-100 fixed lg:static inset-y-0 left-0 z-40 transform transition-transform duration-200 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
         {/* Logo */}
         <div className="px-5 py-5 border-b border-gray-100">
-          <h1 className="text-base font-bold text-gray-900 flex items-center gap-2.5">
-            <span className="w-8 h-8 bg-gradient-to-br from-indigo-600 to-purple-700 rounded-lg flex items-center justify-center">
-              <svg className="w-4.5 h-4.5 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
-              </svg>
-            </span>
-            Readit
-          </h1>
+          <LogoFull />
         </div>
 
         {/* Navigation */}

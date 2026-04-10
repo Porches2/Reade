@@ -127,13 +127,15 @@ export const api = {
   // Poll TTS job status
   ttsPoll: (jobId: string) => request(`/tts/${jobId}`),
 
-  // Start TTS and poll until complete
-  tts: async (data: { pdf_id: string; start_page: number; num_pages: number; voice: string; rate: string }, onProgress?: (status: string) => void) => {
+  // Start TTS and poll until complete (supports cancellation via AbortSignal)
+  tts: async (data: { pdf_id: string; start_page: number; num_pages: number; voice: string; rate: string }, onProgress?: (status: string) => void, signal?: AbortSignal) => {
     const { job_id } = await api.ttsStart(data);
     onProgress?.("Processing audio...");
 
     for (let i = 0; i < 120; i++) { // max ~2 min polling
+      if (signal?.aborted) throw new Error("Cancelled");
       await new Promise((r) => setTimeout(r, 1000));
+      if (signal?.aborted) throw new Error("Cancelled");
       const result = await api.ttsPoll(job_id);
       if (result.status === "done") return result;
       if (result.status === "failed") throw new Error(result.error || "TTS generation failed");
@@ -162,4 +164,27 @@ export const api = {
 
   // Document analysis (TOC + important pages)
   getAnalysis: (pdfId: string) => request(`/pdf/${pdfId}/analysis`),
+
+  // Import explore book to library
+  importBook: (data: { title: string; author: string; download_url: string; cover_url?: string | null; description?: string; tags?: string[] }) =>
+    request("/explore/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }, 120000),
+
+  // Account & Subscription
+  getAccount: () => request("/account"),
+
+  createCheckoutSession: () =>
+    request("/create-checkout-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    }),
+
+  createPortalSession: () =>
+    request("/create-portal-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    }),
 };

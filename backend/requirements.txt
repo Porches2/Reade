@@ -8,3 +8,5 @@ python-dotenv==1.0.1
 edge-tts
 httpx
 firebase-admin
+stripe
+supabase==2.9.1

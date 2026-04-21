@@ -10,7 +10,7 @@ export function LogoIcon({ className = "w-8 h-8" }: { className?: string }) {
 export function LogoFull({ iconClass = "w-7 h-auto", textClass = "text-base font-bold text-gray-900" }: { iconClass?: string; textClass?: string }) {
   return (
     <span className="flex items-center gap-2">
-      <LogoIcon className={`${iconClass} text-[#6E77FF]`} />
+      <LogoIcon className={`${iconClass} text-white`} />
       <span className={textClass}>Readit</span>
     </span>
   );

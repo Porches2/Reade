@@ -7,6 +7,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import { LogoIcon } from "@/components/Logo";
 import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/lib/api";
+import { supabase, thumbnailPublicUrl } from "@/lib/supabase";
 
 interface PdfProgress {
   current_page: number;
@@ -236,16 +237,45 @@ function HomeContent() {
   };
 
   // ─── Data loading ──────────────────────────────────────
+  // Library reads go directly to Supabase via RLS — no backend round-trip,
+  // so the list loads instantly even when the backend is cold/unavailable.
   const refreshLibrary = useCallback(async () => {
+    if (!user) return;
     try {
-      const data = await api.getLibrary();
-      setPdfs(data.pdfs || []);
+      const { data, error } = await supabase
+        .from("pdfs")
+        .select("*, progress:pdf_progress(current_page, total_time_seconds, completed, last_read_at, started_at)")
+        .order("uploaded_at", { ascending: false });
+
+      if (error) throw error;
+
+      const items: PdfItem[] = (data || []).map((row) => {
+        const prog = Array.isArray(row.progress) ? row.progress[0] : row.progress;
+        const item: PdfItem = {
+          pdf_id: row.id,
+          filename: row.filename,
+          total_pages: row.total_pages,
+          thumbnail_url: row.has_thumbnail ? thumbnailPublicUrl(row.user_id, row.id) : null,
+          uploaded_at: row.uploaded_at,
+        };
+        if (prog) {
+          item.progress = {
+            current_page: prog.current_page ?? 1,
+            total_time_seconds: prog.total_time_seconds ?? 0,
+            completed: !!prog.completed,
+            last_read_at: prog.last_read_at ?? "",
+            started_at: prog.started_at ?? "",
+          };
+        }
+        return item;
+      });
+      setPdfs(items);
     } catch (e) {
       console.error("Failed to load library:", e);
     } finally {
       setLibraryLoading(false);
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => { refreshLibrary(); }, [refreshLibrary]);
 
@@ -287,18 +317,14 @@ function HomeContent() {
       .catch(() => {});
   }, []);
 
-  // Load thumbnail URLs — always try (backend generates on-demand if missing)
+  // Thumbnail URLs come straight from Supabase Storage CDN — no backend call.
+  // refreshLibrary already populated pdf.thumbnail_url with the direct URL.
   useEffect(() => {
-    pdfs.forEach(async (pdf) => {
-      if (!thumbUrls[pdf.pdf_id]) {
-        try {
-          const url = await api.getThumbnailUrl(pdf.pdf_id);
-          setThumbUrls((prev) => ({ ...prev, [pdf.pdf_id]: url }));
-        } catch {
-          // Thumbnail unavailable for this PDF
-        }
-      }
-    });
+    const next: Record<string, string> = {};
+    for (const pdf of pdfs) {
+      if (pdf.thumbnail_url) next[pdf.pdf_id] = pdf.thumbnail_url;
+    }
+    setThumbUrls((prev) => ({ ...prev, ...next }));
   }, [pdfs]);
 
   // Load PDF viewer URL

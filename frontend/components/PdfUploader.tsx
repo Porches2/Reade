@@ -10,16 +10,16 @@ interface Props {
     total_pages: number;
     thumbnail_url: string | null;
   }) => void;
+  onUploadError?: (error: string) => void;
 }
 
-export default function PdfUploader({ onUploadSuccess }: Props) {
+export default function PdfUploader({ onUploadSuccess, onUploadError }: Props) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Simulated progress that advances smoothly during upload
   useEffect(() => {
     if (uploading) {
       setProgress(0);
@@ -58,6 +58,7 @@ export default function PdfUploader({ onUploadSuccess }: Props) {
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Upload failed";
         console.error("[PdfUploader] Upload error:", msg);
+        onUploadError?.(msg);
         setError(msg);
       } finally {
         setUploading(false);
@@ -65,20 +66,20 @@ export default function PdfUploader({ onUploadSuccess }: Props) {
         setStatus("");
       }
     },
-    [onUploadSuccess]
+    [onUploadSuccess, onUploadError]
   );
 
   return (
     <div>
       {uploading ? (
         <div className="py-2">
-          <div className="w-full bg-gray-200 rounded-full h-2 mb-1.5">
+          <div className="w-full bg-white/10 rounded-full h-2 mb-1.5">
             <div
-              className="bg-indigo-600 h-2 rounded-full transition-all duration-200"
+              className="bg-white h-2 rounded-full transition-all duration-200"
               style={{ width: `${Math.round(progress)}%` }}
             />
           </div>
-          <p className="text-xs text-gray-500 text-center">
+          <p className="text-xs text-white/50 text-center">
             {status} {Math.round(progress)}%
           </p>
         </div>
@@ -97,13 +98,16 @@ export default function PdfUploader({ onUploadSuccess }: Props) {
           />
           <label
             htmlFor="pdf-input"
-            className="block w-full text-center px-3 py-2 bg-indigo-600 text-white text-xs rounded-lg cursor-pointer hover:bg-indigo-700 transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2 bg-white/5 text-white text-sm rounded-full cursor-pointer hover:bg-white/10 transition-colors font-medium"
           >
-            + Upload PDF
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
+            </svg>
+            Upload
           </label>
         </>
       )}
-      {error && <p className="text-red-500 mt-1 text-xs">{error}</p>}
+      {error && <p className="text-red-400 mt-1 text-xs">{error}</p>}
     </div>
   );
 }

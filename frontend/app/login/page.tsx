@@ -40,16 +40,16 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex bg-[#F0F3F8]">
+    <div className="min-h-screen flex bg-black">
       {/* Left branding panel */}
-      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-indigo-600 to-purple-800 items-center justify-center p-12">
+      <div className="hidden lg:flex lg:w-1/2 bg-white/5 items-center justify-center p-12">
         <div className="max-w-md text-white">
           <div className="flex items-center gap-3 mb-8">
             <LogoIcon className="w-10 h-auto text-white" />
             <h2 className="text-2xl font-bold">Readit</h2>
           </div>
           <h1 className="text-4xl font-bold leading-tight mb-4">Your personal PDF library &amp; audio reader</h1>
-          <p className="text-indigo-100 text-lg leading-relaxed">
+          <p className="text-white/50 text-lg leading-relaxed">
             Upload, organize, and listen to your PDFs with AI-powered text-to-speech. Discover free ebooks from the world&apos;s largest libraries.
           </p>
         </div>
@@ -62,42 +62,42 @@ export default function LoginPage() {
             <LogoFull />
           </div>
 
-          <h2 className="text-2xl font-bold text-gray-900 mb-1">Welcome back</h2>
-          <p className="text-sm text-gray-500 mb-8">Sign in to your account</p>
+          <h2 className="text-2xl font-bold text-white mb-1">Welcome back</h2>
+          <p className="text-sm text-white/50 mb-8">Sign in to your account</p>
 
           {error && (
-            <div className="mb-5 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600">
+            <div className="mb-5 p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">
               {error}
             </div>
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Email</label>
+              <label className="block text-sm font-medium text-white/70 mb-1.5">Email</label>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+                className="w-full px-4 py-2.5 border border-white/10 rounded-xl text-sm text-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none bg-white/5 placeholder-white/30"
                 placeholder="you@example.com"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Password</label>
+              <label className="block text-sm font-medium text-white/70 mb-1.5">Password</label>
               <div className="relative">
                 <input
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  className="w-full px-4 py-2.5 pr-10 border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+                  className="w-full px-4 py-2.5 pr-10 border border-white/10 rounded-xl text-sm text-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none bg-white/5 placeholder-white/30"
                   placeholder="Enter your password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60"
                   tabIndex={-1}
                 >
                   {showPassword ? (
@@ -111,7 +111,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-indigo-600 text-white text-sm font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+              className="w-full py-3 bg-brand-500 text-white text-sm font-semibold rounded-xl hover:bg-brand-600 disabled:opacity-50 transition-colors"
             >
               {loading ? "Signing in..." : "Sign In"}
             </button>
@@ -119,16 +119,16 @@ export default function LoginPage() {
 
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200" />
+              <div className="w-full border-t border-white/10" />
             </div>
             <div className="relative flex justify-center text-xs">
-              <span className="bg-[#F0F3F8] px-3 text-gray-400">or</span>
+              <span className="bg-black px-3 text-white/30">or</span>
             </div>
           </div>
 
           <button
             onClick={handleGoogle}
-            className="w-full py-3 bg-white border border-gray-200 text-sm font-semibold text-gray-700 rounded-xl hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+            className="w-full py-3 bg-white/5 border border-white/10 text-sm font-semibold text-white rounded-xl hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
@@ -139,9 +139,9 @@ export default function LoginPage() {
             Continue with Google
           </button>
 
-          <p className="mt-8 text-center text-sm text-gray-500">
+          <p className="mt-8 text-center text-sm text-white/40">
             Don&apos;t have an account?{" "}
-            <Link href="/register" className="text-indigo-600 hover:underline font-semibold">
+            <Link href="/register" className="text-brand-400 hover:text-brand-300 hover:underline font-semibold">
               Sign up
             </Link>
           </p>

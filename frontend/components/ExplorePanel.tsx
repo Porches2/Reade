@@ -15,7 +15,14 @@ interface Book {
   tags?: string[];
 }
 
-export default function ExplorePanel() {
+interface ImportResult {
+  pdf_id: string;
+  filename: string;
+  total_pages: number;
+  thumbnail_url: string | null;
+}
+
+export default function ExplorePanel({ onImportSuccess, externalSearch }: { onImportSuccess?: (data: ImportResult) => void; externalSearch?: string }) {
   const [categories, setCategories] = useState<string[]>([]);
   const [catalog, setCatalog] = useState<Record<string, Book[]>>({});
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
@@ -24,6 +31,9 @@ export default function ExplorePanel() {
   const [searching, setSearching] = useState(false);
   const [totalResults, setTotalResults] = useState(0);
   const [exploreLoading, setExploreLoading] = useState(true);
+  const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
 
   useEffect(() => {
     api.getExplore()
@@ -36,199 +46,282 @@ export default function ExplorePanel() {
       .finally(() => setExploreLoading(false));
   }, []);
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) {
+  // React to external search from header
+  useEffect(() => {
+    if (!externalSearch?.trim()) {
       setSearchResults(null);
+      setSearchQuery("");
       return;
     }
+    setSearchQuery(externalSearch);
     setSearching(true);
+    api.searchExplore(externalSearch)
+      .then((data) => {
+        setSearchResults(data.results || []);
+        setTotalResults(data.total || 0);
+      })
+      .catch(() => setSearchResults([]))
+      .finally(() => setSearching(false));
+  }, [externalSearch]);
+
+  const handleImport = async (book: Book) => {
+    if (!book.download_url) return;
+    setImporting(true);
+    setImportStatus("Downloading...");
     try {
-      const data = await api.searchExplore(searchQuery);
-      setSearchResults(data.results || []);
-      setTotalResults(data.total || 0);
-    } catch {
-      setSearchResults([]);
+      const result = await api.importBook({
+        title: book.title,
+        author: book.author,
+        download_url: book.download_url,
+        cover_url: book.cover_url,
+        description: book.description,
+        tags: book.tags || [],
+      });
+      setImportStatus("Added to library!");
+      onImportSuccess?.(result);
+      setTimeout(() => {
+        setSelectedBook(null);
+        setImportStatus(null);
+      }, 1500);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Import failed";
+      setImportStatus(`Error: ${msg}`);
     } finally {
-      setSearching(false);
+      setImporting(false);
     }
   };
 
-  // Get recommended books (first 6 from first category)
-  const recommendedBooks = categories.length > 0 ? (catalog[categories[0]] || []).slice(0, 6) : [];
+  // ─── Render helpers ───────────────────────────────────────
 
-  const displayBooks = searchResults !== null
-    ? searchResults
-    : activeCategory
-    ? catalog[activeCategory] || []
-    : [];
+  const BookCard = ({ book, size = "normal" }: { book: Book; size?: "large" | "normal" }) => {
+    const isLarge = size === "large";
+    return (
+      <button
+        onClick={() => { setSelectedBook(book); setImportStatus(null); }}
+        className={`${isLarge ? "flex-shrink-0 w-[171px]" : ""} group text-left`}
+      >
+        <div className={`${isLarge ? "w-[171px] h-[171px]" : "aspect-square"} rounded-2xl overflow-hidden bg-white/5 border border-white/5 group-hover:border-white/20 transition-all flex items-center justify-center`}>
+          {book.cover_url ? (
+            <img
+              src={book.cover_url}
+              alt={book.title}
+              className="w-full h-full object-cover"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+          ) : (
+            <span className={`${isLarge ? "text-sm" : "text-xs"} font-semibold text-white/20 text-center px-3`}>{book.title}</span>
+          )}
+        </div>
+        <h3 className={`mt-2 ${isLarge ? "text-sm" : "text-sm"} font-semibold text-white truncate`}>{book.title}</h3>
+        <p className="text-xs text-white/50 truncate">{book.author}</p>
+      </button>
+    );
+  };
+
+  const CategorySection = ({ title, books }: { title: string; books: Book[] }) => (
+    <section>
+      <h2 className="text-xl font-semibold text-white mb-4">{title}</h2>
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+        {books.slice(0, 12).map((book, i) => (
+          <BookCard key={`${book.title}-${i}`} book={book} />
+        ))}
+      </div>
+    </section>
+  );
+
+  // Determine what to show
+  const heroBooks = categories.length > 0 ? (catalog[categories[0]] || []).slice(0, 8) : [];
 
   return (
-    <div className="space-y-8">
-      {/* Search */}
-      <div className="flex gap-3">
-        <div className="flex-1 relative">
-          <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-          </svg>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-            placeholder="Search free ebooks (e.g. python, philosophy, fiction...)"
-            className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-          />
-        </div>
-        <button onClick={handleSearch} disabled={searching}
-          className="px-6 py-3 bg-indigo-600 text-white text-sm rounded-xl hover:bg-indigo-700 disabled:opacity-50 transition-colors font-medium">
-          {searching ? "..." : "Search"}
-        </button>
-        {searchResults !== null && (
-          <button onClick={() => { setSearchResults(null); setSearchQuery(""); setTotalResults(0); }}
-            className="px-5 py-3 text-sm text-gray-600 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors">
-            Clear
+    <div className="space-y-10 px-2">
+      {/* Category pills */}
+      <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
+        {categories.map((cat) => (
+          <button
+            key={cat}
+            onClick={() => { setActiveCategory(cat); setSearchResults(null); setSearchQuery(""); }}
+            className={`px-4 py-2 text-sm rounded-full whitespace-nowrap transition-colors ${
+              activeCategory === cat && !searchResults
+                ? "bg-white/85 text-black font-semibold"
+                : "bg-white/5 text-white/80 font-normal"
+            }`}
+          >
+            {cat}
           </button>
-        )}
+        ))}
       </div>
 
-      {/* Search results info */}
-      {searchResults !== null && (
-        <p className="text-sm text-gray-600 font-medium">
-          {totalResults} result{totalResults !== 1 ? "s" : ""} for &quot;{searchQuery}&quot;
-        </p>
-      )}
-
-      {/* Recommended section (only when not searching) */}
-      {searchResults === null && recommendedBooks.length > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-gray-900">Recommended</h2>
-            {categories.length > 0 && (
-              <button
-                onClick={() => setActiveCategory(categories[0])}
-                className="text-sm text-indigo-600 font-medium hover:text-indigo-700 border border-indigo-200 rounded-full px-4 py-1"
-              >
-                See All &rsaquo;
-              </button>
-            )}
+      {/* Search results */}
+      {searchResults !== null ? (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-white/60 font-medium">
+              {totalResults} result{totalResults !== 1 ? "s" : ""} for &quot;{searchQuery}&quot;
+            </p>
+            <button onClick={() => { setSearchResults(null); setSearchQuery(""); setTotalResults(0); }}
+              className="px-4 py-2 text-sm text-white/60 bg-white/5 rounded-full hover:bg-white/10 transition-colors">
+              Clear
+            </button>
           </div>
-          <div className="flex gap-5 overflow-x-auto hide-scrollbar pb-2">
-            {recommendedBooks.map((book, i) => (
-              <a
-                key={`rec-${i}`}
-                href={book.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex-shrink-0 w-[170px] group"
-              >
-                <div className="w-[170px] h-[220px] rounded-2xl overflow-hidden bg-gradient-to-br from-indigo-100 to-indigo-100 border border-gray-100 shadow-sm group-hover:shadow-md transition-shadow flex items-center justify-center">
-                  {book.cover_url ? (
-                    <img
-                      src={book.cover_url}
-                      alt={book.title}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = "none";
-                        (e.target as HTMLImageElement).parentElement!.innerHTML = `<div class="flex items-center justify-center w-full h-full p-4"><span class="text-sm font-semibold text-indigo-400 text-center">${book.title}</span></div>`;
-                      }}
-                    />
-                  ) : (
-                    <span className="text-sm font-semibold text-indigo-400 text-center px-4">{book.title}</span>
-                  )}
-                </div>
-                <h3 className="mt-2.5 text-sm font-semibold text-gray-900 truncate">{book.title}</h3>
-                <p className="text-xs text-gray-500 truncate">{book.author}</p>
-              </a>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Categories section */}
-      {searchResults === null && (
-        <section>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-gray-900">Categories</h2>
-          </div>
-          <div className="flex gap-2 mb-5 overflow-x-auto hide-scrollbar pb-1">
-            {categories.map((cat) => (
-              <button
-                key={cat}
-                onClick={() => setActiveCategory(cat)}
-                className={`px-4 py-2 text-sm rounded-full whitespace-nowrap transition-colors font-medium border ${
-                  activeCategory === cat
-                    ? "bg-indigo-600 text-white border-indigo-600"
-                    : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Book grid */}
-      {exploreLoading ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} className="animate-pulse">
-              <div className="aspect-[3/4] rounded-2xl bg-gray-200" />
-              <div className="mt-2 h-4 bg-gray-200 rounded w-3/4" />
-              <div className="mt-1 h-3 bg-gray-100 rounded w-1/2" />
+          {searching ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="animate-spin w-6 h-6 border-2 border-white/20 border-t-white/60 rounded-full" />
             </div>
-          ))}
+          ) : (
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+              {searchResults.map((book, i) => (
+                <BookCard key={`search-${i}`} book={book} />
+              ))}
+            </div>
+          )}
+        </div>
+      ) : exploreLoading ? (
+        /* Loading skeleton */
+        <div className="space-y-10">
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="animate-pulse">
+                <div className="aspect-square rounded-2xl bg-white/5" />
+                <div className="mt-2 h-4 bg-white/5 rounded w-3/4" />
+                <div className="mt-1 h-3 bg-white/5 rounded w-1/2" />
+              </div>
+            ))}
+          </div>
         </div>
       ) : (
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
-        {displayBooks.length === 0 ? (
-          <p className="col-span-full text-gray-400 text-sm text-center py-10">
-            {searching ? "Searching..." : "No books found. Try a different search term."}
-          </p>
-        ) : (
-          displayBooks.map((book, i) => (
-            <a
-              key={`${book.title}-${i}`}
-              href={book.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group"
-            >
-              <div className="aspect-[3/4] rounded-2xl overflow-hidden bg-gradient-to-br from-gray-100 to-gray-50 border border-gray-100 shadow-sm group-hover:shadow-md group-hover:border-indigo-200 transition-all flex items-center justify-center">
-                {book.cover_url ? (
-                  <img
-                    src={book.cover_url}
-                    alt={book.title}
-                    className="w-full h-full object-cover"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                  />
-                ) : (
-                  <span className="text-xs font-semibold text-gray-400 text-center px-3">{book.title}</span>
-                )}
-              </div>
-              <h3 className="mt-2 text-sm font-semibold text-gray-900 truncate">{book.title}</h3>
-              <p className="text-xs text-gray-500 truncate">{book.author}</p>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {book.source && (
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                    book.source === "curated" ? "bg-indigo-50 text-indigo-600" :
-                    book.source === "gutenberg" ? "bg-amber-50 text-amber-600" :
-                    "bg-green-50 text-green-600"
-                  }`}>
-                    {book.source === "curated" ? "Curated" :
-                     book.source === "gutenberg" ? "Gutenberg" : "Open Library"}
-                  </span>
-                )}
-                {book.tags?.slice(0, 2).map((tag) => (
-                  <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
-                    {tag}
-                  </span>
+        /* Main browse view */
+        <div className="space-y-10">
+          {/* Hero row for first category */}
+          {heroBooks.length > 0 && activeCategory === categories[0] && (
+            <section>
+              <h1 className="text-[32px] font-semibold text-white tracking-wide mb-5">Discover</h1>
+              <div className="flex gap-5 overflow-x-auto hide-scrollbar pb-2">
+                {heroBooks.map((book, i) => (
+                  <BookCard key={`hero-${i}`} book={book} size="large" />
                 ))}
               </div>
-            </a>
-          ))
-        )}
-      </div>
+            </section>
+          )}
+
+          {/* Active category content */}
+          {activeCategory && catalog[activeCategory] && (
+            <CategorySection
+              title={activeCategory === categories[0] ? "Recently Added" : activeCategory}
+              books={activeCategory === categories[0] ? (catalog[categories[0]] || []).slice(6) : (catalog[activeCategory] || [])}
+            />
+          )}
+
+          {/* Browse more categories (only on first tab) */}
+          {activeCategory === categories[0] && categories.slice(1, 6).map((cat) => (
+            catalog[cat] && catalog[cat].length > 0 ? (
+              <CategorySection key={cat} title={cat} books={catalog[cat]} />
+            ) : null
+          ))}
+        </div>
+      )}
+
+      {/* ── Book Detail Modal ── */}
+      {selectedBook && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={() => { setSelectedBook(null); setImportStatus(null); }}>
+          <div className="bg-[#111] rounded-2xl shadow-2xl max-w-lg w-full border border-white/10 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            {/* Cover */}
+            <div className="w-full h-[240px] bg-white/5 flex items-center justify-center overflow-hidden">
+              {selectedBook.cover_url ? (
+                <img
+                  src={selectedBook.cover_url}
+                  alt={selectedBook.title}
+                  className="w-full h-full object-cover"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                />
+              ) : (
+                <span className="text-2xl font-bold text-white/10">{selectedBook.title}</span>
+              )}
+            </div>
+
+            <div className="p-6 space-y-4">
+              {/* Title + Author */}
+              <div>
+                <h2 className="text-xl font-semibold text-white">{selectedBook.title}</h2>
+                <p className="text-white/50 text-sm mt-1">{selectedBook.author}</p>
+              </div>
+
+              {/* Tags */}
+              {selectedBook.tags && selectedBook.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {selectedBook.tags.slice(0, 5).map((tag) => (
+                    <span key={tag} className="text-[10px] px-2.5 py-1 rounded-full bg-white/10 text-white/60 capitalize">
+                      {tag.replace(/-/g, " ")}
+                    </span>
+                  ))}
+                  {selectedBook.source && (
+                    <span className="text-[10px] px-2.5 py-1 rounded-full bg-white/5 text-white/30 capitalize">
+                      {selectedBook.source.replace(/_/g, " ")}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Description */}
+              <p className="text-white/60 text-sm leading-relaxed line-clamp-4">
+                {selectedBook.description}
+              </p>
+
+              {/* Import status */}
+              {importStatus && (
+                <p className={`text-sm font-medium ${importStatus.startsWith("Error") ? "text-red-400" : importStatus.includes("Added") ? "text-green-400" : "text-white/60"}`}>
+                  {importStatus}
+                </p>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-3 pt-2">
+                {selectedBook.download_url ? (
+                  <button
+                    onClick={() => handleImport(selectedBook)}
+                    disabled={importing || importStatus?.includes("Added")}
+                    className="flex-1 py-3 text-sm font-medium text-white bg-[#5865F2] rounded-xl hover:bg-[#4752c4] disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                  >
+                    {importing ? (
+                      <>
+                        <div className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
+                        Importing...
+                      </>
+                    ) : importStatus?.includes("Added") ? (
+                      <>
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                        </svg>
+                        In Library
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                        </svg>
+                        Add to Library
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <a
+                    href={selectedBook.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 py-3 text-sm font-medium text-white bg-[#5865F2] rounded-xl hover:bg-[#4752c4] transition-colors text-center"
+                  >
+                    Read Online
+                  </a>
+                )}
+                <button
+                  onClick={() => { setSelectedBook(null); setImportStatus(null); }}
+                  className="px-6 py-3 text-sm font-medium text-white/60 bg-white/10 rounded-xl hover:bg-white/15 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

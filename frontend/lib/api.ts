@@ -128,9 +128,16 @@ export const api = {
   ttsPoll: (jobId: string) => request(`/tts/${jobId}`),
 
   // Start TTS and poll until complete (supports cancellation via AbortSignal)
-  tts: async (data: { pdf_id: string; start_page: number; num_pages: number; voice: string; rate: string }, onProgress?: (status: string) => void, signal?: AbortSignal) => {
+  // onFirstPageReady fires as soon as page 1 audio is available for immediate playback
+  tts: async (
+    data: { pdf_id: string; start_page: number; num_pages: number; voice: string; rate: string },
+    onProgress?: (status: string) => void,
+    signal?: AbortSignal,
+    onFirstPageReady?: (result: { audio_url: string; text: string; word_timings: { word: string; start: number; end: number }[] }) => void,
+  ) => {
     const { job_id } = await api.ttsStart(data);
     onProgress?.("Processing audio...");
+    let firstPageDelivered = false;
 
     for (let i = 0; i < 120; i++) { // max ~2 min polling
       if (signal?.aborted) throw new Error("Cancelled");
@@ -139,7 +146,18 @@ export const api = {
       const result = await api.ttsPoll(job_id);
       if (result.status === "done") return result;
       if (result.status === "failed") throw new Error(result.error || "TTS generation failed");
-      onProgress?.(`Generating audio... ${Math.min(95, Math.round((i / 60) * 100))}%`);
+      // Stream first page audio to caller as soon as it's ready
+      if (result.status === "first_page_ready" && !firstPageDelivered) {
+        firstPageDelivered = true;
+        onFirstPageReady?.({
+          audio_url: result.audio_url,
+          text: result.text,
+          word_timings: result.word_timings,
+        });
+        onProgress?.("Playing first page, generating rest...");
+      } else if (!firstPageDelivered) {
+        onProgress?.(`Generating audio... ${Math.min(95, Math.round((i / 60) * 100))}%`);
+      }
     }
     throw new Error("TTS generation timed out. Try fewer pages.");
   },

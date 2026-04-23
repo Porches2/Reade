@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
 import PdfUploader from "@/components/PdfUploader";
-import ExplorePanel from "@/components/ExplorePanel";
+const ExplorePanel = lazy(() => import("@/components/ExplorePanel"));
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { LogoIcon } from "@/components/Logo";
 import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/lib/api";
-import { supabase, thumbnailPublicUrl } from "@/lib/supabase";
+import { thumbnailPublicUrl } from "@/lib/supabase";
 
 interface PdfProgress {
   current_page: number;
@@ -151,9 +151,10 @@ function HomeContent() {
   const [readPages, setReadPages] = useState(5);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
+  const [ttsError, setTtsError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({});
+  // thumbUrls derived from pdfs — no separate state needed (see useMemo below)
   const [pdfSrc, setPdfSrc] = useState<string | null>(null);
   const [librarySearch, setLibrarySearch] = useState("");
   const [libraryLoading, setLibraryLoading] = useState(true);
@@ -237,44 +238,79 @@ function HomeContent() {
   };
 
   // ─── Data loading ──────────────────────────────────────
-  // Library reads go directly to Supabase via RLS — no backend round-trip,
-  // so the list loads instantly even when the backend is cold/unavailable.
+  // Try Supabase direct query first (fast, no backend needed).
+  // Fall back to backend /library endpoint if Supabase returns empty or errors.
   const refreshLibrary = useCallback(async () => {
     if (!user) return;
+
+    let items: PdfItem[] = [];
+
     try {
-      const { data, error } = await supabase
-        .from("pdfs")
-        .select("*, progress:pdf_progress(current_page, total_time_seconds, completed, last_read_at, started_at)")
-        .order("uploaded_at", { ascending: false });
+      const fbUser = (await import("@/lib/firebase")).auth.currentUser;
+      const fbToken = fbUser ? await fbUser.getIdToken(false) : null;
+      console.log("[Library] Firebase user:", fbUser?.uid, "| token available:", !!fbToken);
 
-      if (error) throw error;
+      // Decode JWT payload to check claims
+      if (fbToken) {
+        try {
+          const payload = JSON.parse(atob(fbToken.split(".")[1]));
+          console.log("[Library] JWT claims:", { sub: payload.sub, iss: payload.iss, aud: payload.aud, exp: new Date(payload.exp * 1000).toISOString() });
+        } catch {}
+      }
 
-      const items: PdfItem[] = (data || []).map((row) => {
-        const prog = Array.isArray(row.progress) ? row.progress[0] : row.progress;
-        const item: PdfItem = {
+      // Raw fetch to Supabase REST API to bypass JS client
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+      const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+      const rawRes = await fetch(`${supabaseUrl}/rest/v1/pdfs?select=id,user_id,filename,total_pages,has_thumbnail,uploaded_at&order=uploaded_at.desc`, {
+        headers: {
+          "apikey": supabaseKey,
+          "Authorization": `Bearer ${fbToken}`,
+        },
+      });
+      const rawData = await rawRes.json();
+      console.log("[Library] Raw Supabase REST:", { status: rawRes.status, count: Array.isArray(rawData) ? rawData.length : "N/A", data: rawData });
+
+      if (Array.isArray(rawData) && rawData.length > 0) {
+        items = rawData.map((row: { id: string; user_id: string; filename: string; total_pages: number; has_thumbnail: boolean; uploaded_at: string }) => ({
           pdf_id: row.id,
           filename: row.filename,
           total_pages: row.total_pages,
           thumbnail_url: row.has_thumbnail ? thumbnailPublicUrl(row.user_id, row.id) : null,
           uploaded_at: row.uploaded_at,
-        };
-        if (prog) {
-          item.progress = {
-            current_page: prog.current_page ?? 1,
-            total_time_seconds: prog.total_time_seconds ?? 0,
-            completed: !!prog.completed,
-            last_read_at: prog.last_read_at ?? "",
-            started_at: prog.started_at ?? "",
-          };
-        }
-        return item;
-      });
-      setPdfs(items);
+        }));
+      }
     } catch (e) {
-      console.error("Failed to load library:", e);
-    } finally {
-      setLibraryLoading(false);
+      console.error("[Library] Supabase query failed:", e);
     }
+
+    // Fallback: server-side API route (bypasses RLS with service role)
+    if (items.length === 0) {
+      try {
+        console.log("[Library] Falling back to /api/library...");
+        const fbUser = (await import("@/lib/firebase")).auth.currentUser;
+        const token = fbUser ? await fbUser.getIdToken(false) : null;
+        const res = await fetch("/api/library", {
+          headers: token ? { "Authorization": `Bearer ${token}` } : {},
+        });
+        const data = await res.json();
+        console.log("[Library] API route returned:", { count: data.pdfs?.length ?? 0 });
+        if (data.pdfs && data.pdfs.length > 0) {
+          items = data.pdfs.map((p: { pdf_id: string; filename: string; total_pages: number; thumbnail_url: string | null; uploaded_at?: string; user_id?: string }) => ({
+            pdf_id: p.pdf_id,
+            filename: p.filename,
+            total_pages: p.total_pages,
+            thumbnail_url: p.thumbnail_url,
+            uploaded_at: p.uploaded_at,
+          }));
+        }
+      } catch (e) {
+        console.error("[Library] API route fallback failed:", e);
+      }
+    }
+
+    console.log("[Library] Final result:", items.length, "PDFs loaded");
+    setPdfs(items);
+    setLibraryLoading(false);
   }, [user]);
 
   useEffect(() => { refreshLibrary(); }, [refreshLibrary]);
@@ -298,16 +334,34 @@ function HomeContent() {
     }
   }, [refreshAccount]);
 
-  // Wake backend on page load (Render free tier hibernates)
+  // Wake backend + keep alive (Render free tier hibernates after 15min idle)
   useEffect(() => {
-    fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/health`).catch(() => {});
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const ping = () => fetch(`${backendUrl}/health`).catch(() => {});
+    ping(); // immediate wake
+    const interval = setInterval(ping, 5 * 60 * 1000); // every 5 min while tab is open
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
+    // Load cached voices instantly so UI is ready before backend responds
+    try {
+      const cached = localStorage.getItem("reade-voices-cache");
+      if (cached) {
+        const voices = JSON.parse(cached);
+        setVoices(voices);
+        const femaleEnUs = voices.find(
+          (v: Voice) => v.locale.startsWith("en-US") && v.gender === "Female"
+        );
+        if (femaleEnUs && !selectedVoice) setSelectedVoice(femaleEnUs.name);
+      }
+    } catch {}
+
     api.getVoices()
       .then((data) => {
         if (data.voices) {
           setVoices(data.voices);
+          try { localStorage.setItem("reade-voices-cache", JSON.stringify(data.voices)); } catch {}
           const femaleEnUs = data.voices.find(
             (v: Voice) => v.locale.startsWith("en-US") && v.gender === "Female"
           );
@@ -317,14 +371,13 @@ function HomeContent() {
       .catch(() => {});
   }, []);
 
-  // Thumbnail URLs come straight from Supabase Storage CDN — no backend call.
-  // refreshLibrary already populated pdf.thumbnail_url with the direct URL.
-  useEffect(() => {
-    const next: Record<string, string> = {};
+  // Thumbnail URLs derived from pdfs — memoized to avoid re-renders
+  const thumbUrls = useMemo(() => {
+    const urls: Record<string, string> = {};
     for (const pdf of pdfs) {
-      if (pdf.thumbnail_url) next[pdf.pdf_id] = pdf.thumbnail_url;
+      if (pdf.thumbnail_url) urls[pdf.pdf_id] = pdf.thumbnail_url;
     }
-    setThumbUrls((prev) => ({ ...prev, ...next }));
+    return urls;
   }, [pdfs]);
 
   // Load PDF viewer URL
@@ -416,6 +469,7 @@ function HomeContent() {
     const controller = new AbortController();
     ttsAbortRef.current = controller;
     setLoading(true);
+    setTtsError(null);
     setGenProgress(5);
     setStatus("Starting audio generation...");
     setCurrentWordIndex(-1);
@@ -424,6 +478,8 @@ function HomeContent() {
     setShowReader(false);
 
     try {
+      let firstPagePlaying = false;
+
       const data = await api.tts(
         {
           pdf_id: activePdf.pdf_id,
@@ -437,18 +493,48 @@ function HomeContent() {
           const match = progressStatus.match(/(\d+)%/);
           if (match) setGenProgress(parseInt(match[1]));
         },
-        controller.signal
+        controller.signal,
+        // Stream first page immediately for instant playback
+        (firstPage) => {
+          firstPagePlaying = true;
+          const timings: WordTiming[] = firstPage.word_timings || [];
+          setWordTimings(timings);
+          wordRefs.current = new Array(timings.length).fill(null);
+          setAudioUrl(api.getAudioUrl(firstPage.audio_url.replace("/audio/", "")));
+          setShowReader(true);
+          setGenProgress(30);
+          setStatus("Playing — generating remaining pages...");
+        }
       );
 
       setGenProgress(100);
 
+      // Full audio is ready — swap to complete version
       const timings: WordTiming[] = data.word_timings || [];
+      const currentTime = audioRef.current?.currentTime || 0;
+
       setWordTimings(timings);
       wordRefs.current = new Array(timings.length).fill(null);
       setPagesRead(data.pages_read || []);
-      setAudioUrl(api.getAudioUrl(data.audio_url.replace("/audio/", "")));
+      const fullAudioUrl = api.getAudioUrl(data.audio_url.replace("/audio/", ""));
+
+      if (firstPagePlaying) {
+        // Seamlessly swap to full audio, preserving playback position
+        const wasPlaying = !audioRef.current?.paused;
+        setAudioUrl(fullAudioUrl);
+        // After React updates the audio src, seek to where we were
+        requestAnimationFrame(() => {
+          if (audioRef.current) {
+            audioRef.current.currentTime = currentTime;
+            if (wasPlaying) audioRef.current.play().catch(() => {});
+          }
+        });
+      } else {
+        setAudioUrl(fullAudioUrl);
+        setShowReader(true);
+      }
+
       setStatus(`Reading pages ${(data.pages_read || []).join(", ")}`);
-      setShowReader(true);
 
       api.saveProgress(activePdf.pdf_id, {
         current_page: data.pages_read?.[data.pages_read.length - 1] || readPage,
@@ -461,11 +547,13 @@ function HomeContent() {
       if (data.next_page) setReadPage(data.next_page);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed";
+      console.error("[TTS] Error:", msg, e);
       if (msg === "Cancelled") {
         // User cancelled — already cleaned up by handleCancelGeneration
         return;
       }
       setGenProgress(0);
+      setTtsError(msg);
       setStatus(`Error: ${msg}`);
     } finally {
       ttsAbortRef.current = null;
@@ -624,11 +712,17 @@ function HomeContent() {
     setReadPage(pdf.progress?.current_page || 1);
   };
 
-  const filteredPdfs = librarySearch
-    ? pdfs.filter((p) => p.filename.toLowerCase().includes(librarySearch.toLowerCase()))
-    : sidebarCategory
-    ? pdfs.filter((p) => p.analysis?.tags?.some((t) => t.toLowerCase().includes(sidebarCategory.toLowerCase())))
-    : pdfs;
+  const filteredPdfs = useMemo(() => {
+    if (librarySearch) {
+      const q = librarySearch.toLowerCase();
+      return pdfs.filter((p) => p.filename.toLowerCase().includes(q));
+    }
+    if (sidebarCategory) {
+      const cat = sidebarCategory.toLowerCase();
+      return pdfs.filter((p) => p.analysis?.tags?.some((t) => t.toLowerCase().includes(cat)));
+    }
+    return pdfs;
+  }, [pdfs, librarySearch, sidebarCategory]);
 
   const userInitial = user?.email?.[0]?.toUpperCase() || "U";
 
@@ -771,7 +865,7 @@ function HomeContent() {
                     {/* Thumbnail */}
                     <div className="w-[53px] h-[53px] rounded-lg overflow-hidden bg-white/5 flex-shrink-0 flex items-center justify-center">
                       {thumbUrls[pdf.pdf_id] ? (
-                        <img src={thumbUrls[pdf.pdf_id]} alt="" className="w-full h-full object-cover" />
+                        <img src={thumbUrls[pdf.pdf_id]} alt="" className="w-full h-full object-cover" loading="lazy" />
                       ) : (
                         <svg className="w-6 h-6 text-white/20" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
@@ -838,17 +932,23 @@ function HomeContent() {
 
         {/* ── CENTER: Discover / Explore ── */}
         <main className="flex-1 overflow-y-auto py-2 min-w-0">
-          <ExplorePanel externalSearch={exploreSearch} onImportSuccess={(data) => {
-            const newPdf: PdfItem = {
-              pdf_id: data.pdf_id,
-              filename: data.filename,
-              total_pages: data.total_pages,
-              thumbnail_url: data.thumbnail_url,
-            };
-            setPdfs((prev) => [...prev, newPdf]);
-            setActivePdf(newPdf);
-            setReadPage(1);
-          }} />
+          <Suspense fallback={
+            <div className="flex items-center justify-center py-20">
+              <div className="animate-spin w-6 h-6 border-2 border-white/20 border-t-white/60 rounded-full" />
+            </div>
+          }>
+            <ExplorePanel externalSearch={exploreSearch} onImportSuccess={(data) => {
+              const newPdf: PdfItem = {
+                pdf_id: data.pdf_id,
+                filename: data.filename,
+                total_pages: data.total_pages,
+                thumbnail_url: data.thumbnail_url,
+              };
+              setPdfs((prev) => [...prev, newPdf]);
+              setActivePdf(newPdf);
+              setReadPage(1);
+            }} />
+          </Suspense>
         </main>
 
         {/* ── RIGHT PANEL: Book Detail ── */}
@@ -859,7 +959,7 @@ function HomeContent() {
                 {/* Cover image */}
                 <div className="w-full aspect-[3/2] rounded-lg overflow-hidden bg-white/5 flex items-center justify-center">
                   {thumbUrls[activePdf.pdf_id] ? (
-                    <img src={thumbUrls[activePdf.pdf_id]} alt={activePdf.filename} className="w-full h-full object-cover" />
+                    <img src={thumbUrls[activePdf.pdf_id]} alt={activePdf.filename} className="w-full h-full object-cover" loading="lazy" />
                   ) : (
                     <svg className="w-16 h-16 text-white/10" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
@@ -1338,6 +1438,14 @@ function HomeContent() {
                   {activePdf.total_pages} pages
                 </p>
               </div>
+
+              {/* TTS error banner */}
+              {ttsError && !loading && (
+                <div className="w-full px-4 py-2 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center gap-2 mb-2">
+                  <span className="text-red-400 text-xs flex-1">Failed: {ttsError}</span>
+                  <button onClick={() => setTtsError(null)} className="text-red-400/60 hover:text-red-400 text-xs">dismiss</button>
+                </div>
+              )}
 
               {/* ── STATE 1: Page selection (no audio, not loading) ── */}
               {!audioUrl && !loading && (

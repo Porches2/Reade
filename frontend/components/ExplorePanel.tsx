@@ -34,16 +34,36 @@ export default function ExplorePanel({ onImportSuccess, externalSearch }: { onIm
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [importing, setImporting] = useState(false);
   const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [serverWaking, setServerWaking] = useState(false);
 
   useEffect(() => {
+    // Show cached explore data instantly while fetching fresh data
+    try {
+      const cached = localStorage.getItem("reade-explore-cache");
+      if (cached) {
+        const data = JSON.parse(cached);
+        setCategories(data.categories || []);
+        setCatalog(data.catalog || {});
+        if (data.categories?.length > 0) setActiveCategory(data.categories[0]);
+        setExploreLoading(false);
+      }
+    } catch {}
+
+    // If no cache, show "server waking up" after 3s of waiting
+    const wakeTimer = setTimeout(() => setServerWaking(true), 3000);
+
     api.getExplore()
       .then((data) => {
         setCategories(data.categories || []);
         setCatalog(data.catalog || {});
-        if (data.categories?.length > 0) setActiveCategory(data.categories[0]);
+        if (data.categories?.length > 0) setActiveCategory((prev) => prev || data.categories[0]);
+        // Cache for instant load next time
+        try { localStorage.setItem("reade-explore-cache", JSON.stringify(data)); } catch {}
       })
       .catch(() => {})
-      .finally(() => setExploreLoading(false));
+      .finally(() => { setExploreLoading(false); setServerWaking(false); clearTimeout(wakeTimer); });
+
+    return () => clearTimeout(wakeTimer);
   }, []);
 
   // React to external search from header
@@ -106,6 +126,7 @@ export default function ExplorePanel({ onImportSuccess, externalSearch }: { onIm
               src={book.cover_url}
               alt={book.title}
               className="w-full h-full object-cover"
+              loading="lazy"
               onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
             />
           ) : (
@@ -178,6 +199,12 @@ export default function ExplorePanel({ onImportSuccess, externalSearch }: { onIm
       ) : exploreLoading ? (
         /* Loading skeleton */
         <div className="space-y-10">
+          {serverWaking && (
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/5 border border-white/10">
+              <div className="animate-spin w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full flex-shrink-0" />
+              <p className="text-sm text-white/50">Waking up server — free tier hibernates after inactivity. Usually takes 10-20s...</p>
+            </div>
+          )}
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
             {Array.from({ length: 8 }).map((_, i) => (
               <div key={i} className="animate-pulse">
@@ -231,7 +258,8 @@ export default function ExplorePanel({ onImportSuccess, externalSearch }: { onIm
                   src={selectedBook.cover_url}
                   alt={selectedBook.title}
                   className="w-full h-full object-cover"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                  loading="lazy"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                 />
               ) : (
                 <span className="text-2xl font-bold text-white/10">{selectedBook.title}</span>

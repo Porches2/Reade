@@ -107,7 +107,10 @@ def _require_pdf(user_id: str, pdf_id: str) -> dict:
     """Return the PDF row or raise 404. Replaces legacy get_pdf_meta."""
     row = db.get_pdf(user_id, pdf_id)
     if not row:
-        raise HTTPException(status_code=404, detail="PDF not found. Upload a PDF first.")
+        # Debug: check if PDF exists for ANY user
+        all_pdfs = db.list_pdfs(user_id)
+        logger.error(f"[_require_pdf] NOT FOUND: user_id={user_id!r}, pdf_id={pdf_id!r}. User has {len(all_pdfs)} PDFs: {[p['id'] for p in all_pdfs[:5]]}")
+        raise HTTPException(status_code=404, detail=f"PDF not found. user_id={user_id}, pdf_count={len(all_pdfs)}")
     return row
 
 
@@ -595,23 +598,68 @@ async def _run_tts_job(job_id: str, user_id: str, req_data: dict):
 
         _tts_jobs[job_id] = {"status": "processing", "progress": 10}
 
-        # Generate TTS for all pages in parallel
-        tasks = [
-            _generate_single_page_tts(text, req_data["voice"], req_data["rate"])
-            for text in page_texts
-        ]
-        results = await asyncio.gather(*tasks)
+        # ── Streaming approach: generate first page immediately, rest in parallel ──
+        # Generate first page right away so frontend can start playing
+        first_audio, first_boundaries = await _generate_single_page_tts(
+            page_texts[0], req_data["voice"], req_data["rate"]
+        )
+
+        # Build word timings for first page
+        first_word_timings: list[dict] = []
+        first_cumulative = 0
+        for sent in first_boundaries:
+            end_offset = sent["offset"] + sent["duration"]
+            if end_offset > first_cumulative:
+                first_cumulative = end_offset
+            start_ms = sent["offset"] / 10_000
+            dur_ms = sent["duration"] / 10_000
+            words = sent["text"].split()
+            total_chars = max(sum(len(w) for w in words), 1)
+            cursor = start_ms
+            for w in words:
+                word_dur = dur_ms * (len(w) / total_chars)
+                first_word_timings.append({"word": w, "start": round(cursor), "end": round(cursor + word_dur)})
+                cursor += word_dur
+
+        # Upload first page audio so frontend can start playing immediately
+        if len(page_texts) > 1:
+            first_audio_id = str(uuid.uuid4())
+            db.upload_file(
+                db.BUCKET_AUDIO,
+                db.audio_object_path(first_audio_id),
+                first_audio,
+                content_type="audio/mpeg",
+            )
+            _tts_jobs[job_id] = {
+                "status": "first_page_ready",
+                "audio_url": f"/audio/{first_audio_id}",
+                "text": page_texts[0],
+                "word_timings": first_word_timings,
+                "pages_read": page_nums[:1],
+                "progress": 30,
+            }
+            logger.info(f"[TTS Job {job_id}] First page ready, generating remaining {len(page_texts)-1} pages...")
+
+            # Generate remaining pages in parallel
+            remaining_tasks = [
+                _generate_single_page_tts(text, req_data["voice"], req_data["rate"])
+                for text in page_texts[1:]
+            ]
+            remaining_results = await asyncio.gather(*remaining_tasks)
+            results = [(first_audio, first_boundaries)] + list(remaining_results)
+        else:
+            # Only one page — skip the intermediate step
+            results = [(first_audio, first_boundaries)]
 
         _tts_jobs[job_id] = {"status": "processing", "progress": 80}
 
-        # Concatenate audio and build word timings with correct offsets
+        # Concatenate all audio and build complete word timings
         all_audio = b""
         word_timings: list[dict] = []
         cumulative_offset = 0  # in Edge TTS units (10,000ths of second)
 
         for audio_bytes, boundaries in results:
             all_audio += audio_bytes
-            # Find the end offset of this page's audio for cumulative tracking
             page_max_offset = 0
             for sent in boundaries:
                 end_offset = sent["offset"] + sent["duration"]
@@ -629,7 +677,7 @@ async def _run_tts_job(job_id: str, user_id: str, req_data: dict):
             cumulative_offset += page_max_offset
 
         audio_id = str(uuid.uuid4())
-        # Upload audio to Supabase Storage
+        # Upload full concatenated audio to Supabase Storage
         db.upload_file(
             db.BUCKET_AUDIO,
             db.audio_object_path(audio_id),
